@@ -1,104 +1,79 @@
 import streamlit as st
-import pandas as pd
 import folium
-from folium.plugins import PolyLineDecorator
 from streamlit_folium import st_folium
-from geopy.distance import geodesic
-from geopy.geocoders import Nominatim
 import math
 
-# --- Funkcje pomocnicze ---
+# Przykładowe miejscowości z współrzędnymi
+miejscowosci = [
+    {"nazwa": "Warszawa", "lat": 52.22977, "lon": 21.01178},
+    {"nazwa": "Kraków", "lat": 50.06465, "lon": 19.94498},
+    {"nazwa": "Gdańsk", "lat": 54.35205, "lon": 18.64637},
+    {"nazwa": "Wrocław", "lat": 51.10789, "lon": 17.03854},
+    {"nazwa": "Poznań", "lat": 52.40637, "lon": 16.92517},
+]
+
+def znajdz_miejscowosci(query, lista, limit=10):
+    query = query.lower()
+    wyniki = [m for m in lista if m["nazwa"].lower().startswith(query)]
+    return wyniki[:limit]
 
 def azymut(p1, p2):
-    """Oblicza azymut w stopniach między dwoma punktami (lat, lon)."""
-    lat1, lon1 = math.radians(p1[0]), math.radians(p1[1])
-    lat2, lon2 = math.radians(p2[0]), math.radians(p2[1])
-    dLon = lon2 - lon1
-    x = math.sin(dLon) * math.cos(lat2)
-    y = math.cos(lat1)*math.sin(lat2) - math.sin(lat1)*math.cos(lat2)*math.cos(dLon)
+    lat1 = math.radians(p1[0])
+    lon1 = math.radians(p1[1])
+    lat2 = math.radians(p2[0])
+    lon2 = math.radians(p2[1])
+    dlon = lon2 - lon1
+    x = math.sin(dlon) * math.cos(lat2)
+    y = math.cos(lat1)*math.sin(lat2) - math.sin(lat1)*math.cos(lat2)*math.cos(dlon)
     brng = math.atan2(x, y)
     brng = math.degrees(brng)
     return (brng + 360) % 360
 
-def podobny_kierunek(az1, az2, prog=30):
-    diff = abs(az1 - az2)
-    return diff <= prog or diff >= 360 - prog
+st.title("Mapa Polski - wybierz miejscowości")
 
-def odleglosc_km(p1, p2):
-    return geodesic(p1, p2).km
+input_z = st.text_input("Z (miejsce startowe)")
+wyniki_z = znajdz_miejscowosci(input_z, miejscowosci) if input_z else []
+wybor_z = None
+if wyniki_z:
+    nazwy_z = [m["nazwa"] for m in wyniki_z]
+    wybor_z = st.selectbox("Wybierz miejscowość startową", nazwy_z)
 
-# --- Inicjalizacja geokodera ---
-geolocator = Nominatim(user_agent="mapa_polski_app")
+input_do = st.text_input("Do (miejsce docelowe)")
+wyniki_do = znajdz_miejscowosci(input_do, miejscowosci) if input_do else []
+wybor_do = None
+if wyniki_do:
+    nazwy_do = [m["nazwa"] for m in wyniki_do]
+    wybor_do = st.selectbox("Wybierz miejscowość docelową", nazwy_do)
 
-# --- Wczytanie tras istniejących ---
-@st.cache_data
-def wczytaj_trasy(sciezka):
-    df = pd.read_csv(sciezka)
-    return df
+if wybor_z and wybor_do:
+    start = next(m for m in miejscowosci if m["nazwa"] == wybor_z)
+    end = next(m for m in miejscowosci if m["nazwa"] == wybor_do)
 
-# --- Funkcja do geokodowania nazwy miejscowości ---
-@st.cache_data
-def geokoduj(nazwa):
-    try:
-        lokalizacja = geolocator.geocode(f"{nazwa}, Polska")
-        if lokalizacja:
-            return (lokalizacja.latitude, lokalizacja.longitude)
-    except:
-        return None
+    mapa = folium.Map(location=[(start["lat"] + end["lat"]) / 2, (start["lon"] + end["lon"]) / 2], zoom_start=6)
 
-# --- Interfejs ---
+    folium.Marker([start["lat"], start["lon"]],
+                  tooltip="Start: " + start["nazwa"],
+                  icon=folium.Icon(color='green')).add_to(mapa)
+    folium.Marker([end["lat"], end["lon"]],
+                  tooltip="Cel: " + end["nazwa"],
+                  icon=folium.Icon(color='red')).add_to(mapa)
 
-st.title("Mapa Polski - Wybór trasy i porównanie z istniejącymi trasami")
+    folium.PolyLine(locations=[[start["lat"], start["lon"]], [end["lat"], end["lon"]]],
+                    color="blue", weight=5).add_to(mapa)
 
-# Wczytaj istniejące trasy
-trasy_df = wczytaj_trasy("trasy.csv")
+    # Oblicz środek linii
+    mid_lat = (start["lat"] + end["lat"]) / 2
+    mid_lon = (start["lon"] + end["lon"]) / 2
 
-input_z = st.text_input("Z (miejsce startowe):")
-input_do = st.text_input("Do (miejsce docelowe):")
+    # Dodajemy ikonę strzałki na środku trasy
+    arrow_icon = folium.CustomIcon(
+        icon_image="https://cdn-icons-png.flaticon.com/512/32/32195.png",
+        icon_size=(30, 30)
+    )
+    folium.Marker(location=[mid_lat, mid_lon],
+                  icon=arrow_icon,
+                  tooltip="Kierunek trasy").add_to(mapa)
 
-if input_z and input_do:
-    start_coords = geokoduj(input_z)
-    end_coords = geokoduj(input_do)
-
-    if not start_coords or not end_coords:
-        st.error("Nie udało się znaleźć współrzędnych dla podanych miejscowości.")
-    else:
-        # Oblicz azymut nowej trasy
-        nowy_azymut = azymut(start_coords, end_coords)
-
-        # Filtruj trasy istniejące według warunków
-        trasy_pasujace = []
-        for _, row in trasy_df.iterrows():
-            start_exist = (row["lat_z"], row["lon_z"])
-            end_exist = (row["lat_do"], row["lon_do"])
-            az_exist = azymut(start_exist, end_exist)
-            dist = odleglosc_km(end_exist, end_coords)
-
-            if podobny_kierunek(nowy_azymut, az_exist) and dist <= 50:
-                trasy_pasujace.append(row)
-
-        # Rysowanie mapy
-        srodek_mapy = [(start_coords[0] + end_coords[0]) / 2, (start_coords[1] + end_coords[1]) / 2]
-        mapa = folium.Map(location=srodek_mapy, zoom_start=6)
-
-        # Nowa trasa - linia z strzałką
-        linia_nowa = folium.PolyLine(locations=[start_coords, end_coords], color="blue", weight=5).add_to(mapa)
-        arrow_nowa = PolyLineDecorator(linia_nowa, patterns=[dict(offset='100%', repeat='100%', symbol=folium.Symbol.arrowHead(color='blue', size=15))])
-        mapa.add_child(arrow_nowa)
-
-        folium.Marker(start_coords, tooltip="Start nowej trasy: " + input_z, icon=folium.Icon(color='green')).add_to(mapa)
-        folium.Marker(end_coords, tooltip="Cel nowej trasy: " + input_do, icon=folium.Icon(color='red')).add_to(mapa)
-
-        # Istniejące pasujące trasy (czerwone)
-        for t in trasy_pasujace:
-            start_exist = (t["lat_z"], t["lon_z"])
-            end_exist = (t["lat_do"], t["lon_do"])
-            linia_exist = folium.PolyLine(locations=[start_exist, end_exist], color="orange", weight=4, opacity=0.7).add_to(mapa)
-            arrow_exist = PolyLineDecorator(linia_exist, patterns=[dict(offset='100%', repeat='100%', symbol=folium.Symbol.arrowHead(color='orange', size=12))])
-            mapa.add_child(arrow_exist)
-            folium.Marker(start_exist, tooltip="Start istniejącej trasy", icon=folium.Icon(color='darkred', icon='info-sign')).add_to(mapa)
-            folium.Marker(end_exist, tooltip="Cel istniejącej trasy", icon=folium.Icon(color='darkred', icon='info-sign')).add_to(mapa)
-
-        st_folium(mapa, width=800, height=600)
+    st_folium(mapa, width=700, height=500)
 else:
-    st.info("Proszę wpisz miejscowości Z i Do, aby zobaczyć mapę tras.")
+    st.write("Wpisz i wybierz miejscowości startową i docelową, aby zobaczyć trasę.")
