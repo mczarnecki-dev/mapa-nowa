@@ -1,5 +1,5 @@
 streamlit
 pandas
-folium
+folium>=0.12.1
 geopy
 streamlit-folium
